@@ -1,3 +1,3 @@
 # 1D-signal-synthesis
 
-Synthesis 1d sparse signal in python
+Synthesis 1d (derivative of) poisson process in python
