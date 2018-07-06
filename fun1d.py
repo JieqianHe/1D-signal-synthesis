@@ -11,25 +11,26 @@ from numpy import linalg as LA
 import time
 # from numbapro import vectorize
 
-def gaussian(x):
+def gaussian(x, sigma):
     pi = math.pi
     y = 1 / np.sqrt(2 * pi) * np.exp(- x**2 / 2)
     return y
 
-def window_filter_1d(n, s, xi):
+def window_filter_1d(n, s, xi, sigma):
     # generate one 1D gabor wavelet 
     x = np.arange(n) - np.floor(n/2)
     chi = np.zeros(n)
-    chi = gaussian(x/s)
+    chi = gaussian(x/s, sigma)
     
     o = np.exp(1j * xi * x)
     
     psi = np.multiply(chi, o)
     
-    psi_hat = np.fft.fft(psi)
+    psi_hat = np.fft.fft(np.fft.fftshift(psi))
+#     psi_hat = np.fft.fft(psi)
     return psi, psi_hat
 
-def window_filter_family_1d(n, s, xi):
+def window_filter_family_1d(n, s, xi, sigma):
     # generate a family of 1D gabor wavelets with specified scales and rotations in space
     ns = s.shape[0]
     nxi = xi.shape[0]
@@ -38,8 +39,21 @@ def window_filter_family_1d(n, s, xi):
     psi_hat = np.zeros((n, ns, nxi),dtype=complex)
     for i in range(ns):
         for k in range(nxi):
-                psi[:, i, k], psi_hat[:, i, k] = window_filter_1d(n, int(s[i]), xi[k])
+                psi[:, i, k], psi_hat[:, i, k] = window_filter_1d(n, int(s[i]), xi[k], sigma)
     return psi, psi_hat
+
+def determine_sigma(epsilon):
+    sigma = np.sqrt(- 2 * np.log(epsilon)) / math.pi
+    return sigma
+
+def determine_J(N, Q, sigma, *alpha):
+    if len(alpha) == 0:
+        alpha = 3
+    J = np.log2(N) - np.log2(alpha) - np.log2(sigma) - 1
+    int_J = max(np.floor(J), 1);
+    frac_J = (1/Q) * np.around((J - int_J) * Q);
+    J = int_J + frac_J;
+    return J
 
 def gabor_wave_1d(n, s, xi):
     # generate one 1D gabor wavelet 
@@ -55,7 +69,7 @@ def gabor_wave_1d(n, s, xi):
     return psi, psi_hat
                          
 
-def gabor_wave_family_1d(n, s, xi):
+def gabor_wave_family_1d(n, s, xi, sigma):
     # generate a family of 1D gabor wavelets with specified scales and rotations in space
     ns = s.shape[0]
     nxi = xi.shape[0]
@@ -87,62 +101,18 @@ def wave_trans_in_freq_1d(x, psi_hat):
         f[:,i] = np.fft.ifft(np.multiply(x_hat, psi_hat[:,i]))
     return f
 
-def diff(y0, sx, psi_hat, psi):
+def diff(y0, sx, psi_hat, psi, z):
     # difference vector between first moment wavelet coefficients
     sy = np.sum(np.abs(wave_trans_in_freq_1d(y0, psi_hat)), axis = 0)
     sy = np.append(np.sum(y0), sy)
-    
-    diff = np.sum((sy - sx)**2)
-    
+    if z:
+        diff = np.sum((sy - sx)**2)
+    else:                                                               
+        diff = np.sum((sy[1:] - sx[1:])**2)
     return diff
 
-def synthesis(x, psi_hat, psi, jacob, max_err, max_epoch, *args):
-    # collect parameters
-    nx = x.shape
-    nw = psi_hat.shape[1]  # number of wavelets 
-    
-    # scattering coefficients of original signal
-    sx = np.sum(np.abs(wave_trans_in_freq_1d(x, psi_hat)),axis = 0)
-    sx = np.append(np.sum(x), sx)
-    
-    # randomly initialize new signal
-    narg = len(args)
-    if narg == 0:
-        y0 = np.random.random(nx[0]) 
-    else:
-        y0 = args[0]
-        
-    y = np.zeros((nx[0], 1))
-    
-    err = 1
-    epoch = 0
-    tic = time.time()
-    while (err > max_err) & (epoch < max_epoch):
-        
-        epoch += 1
-        ind = np.random.choice(nw, nw, replace = False) # randomize index of wavelets
-        print('epoch:', epoch)
-        
-        for i in range(nw):
-#             print('number of wavelets:', i + 1)
-#             print('added index:', ind[i])
-            if jacob:
-                res = minimize(diff, y0, args = (sx[np.append([0], ind[0:i+1] + 1)], psi_hat[:,ind[0:i+1]], \
-                                                         psi[:,ind[0:i+1]]), jac = jac, method='BFGS')
-            else:
-                res = minimize(diff, y0, args = (sx[np.append([0], ind[0:i+1] + 1)], psi_hat[:,ind[0:i+1]], \
-                                                         psi[:,ind[0:i+1]]), method='BFGS')
-            y0 = res.x
-            y = np.append(y, np.reshape(y0, (y0.shape[0], 1)), axis = 1)
-            
-            err = res.fun
-        print('current error:', err)
-        
-    toc = time.time()
-    print('running time: ', toc - tic)
-    return y
 
-def jac(y0, sx, psi_hat, psi):
+def jac(y0, sx, psi_hat, psi, z):
     # jacobian function for difference
     epsilon = 1e-6
     n = y0.shape[0]
@@ -152,43 +122,24 @@ def jac(y0, sx, psi_hat, psi):
     temp3 = np.zeros(n)
     
     psi_shift = np.zeros((n,n), dtype = complex)
+    psi_fftshift = np.fft.fftshift(psi, axes = 0)
     
     sy = np.sum(np.abs(temp1), axis = 0)
     sy = np.append(np.sum(y0), sy)
-    temp3 = temp3 + 2 * (sy[0] - sx[0]) * np.ones(n)
+        
+    if z:
+        temp3 = temp3 + 2 * (sy[0] - sx[0]) * np.ones(n)
     
     for i in range(nw):
         temp2 = temp1[:,i]
         for p in range(n):
-            psi_shift[:, p] = np.roll(psi[:, i], p, axis = 0)
-        
+            psi_shift[:, p] = np.roll(psi_fftshift[:,i], p, axis = 0)
+#             psi_shift[:, p] = np.roll(psi[:,i], p, axis = 0)
         temp = np.matmul(np.divide(np.real(temp2), abs(temp2) + epsilon), np.real(psi_shift)) + \
                np.matmul(np.divide(np.imag(temp2), abs(temp2) + epsilon), np.imag(psi_shift))
         temp3 = temp3 + 2 * (sy[i+1] - sx[i+1]) * temp
-        
     return temp3
 
-def jacfun(y0, sx, psi_hat, psi):
-    # jacobian function for difference
-    epsilon = 1e-6
-    n = y0.shape[0]
-    nw = psi_hat.shape[1]
-    
-    temp1 = wave_trans_in_freq_1d(y0, psi_hat)
-    temp3 = np.zeros(n)
-    
-    psi_shift = np.zeros((n,n), dtype = complex)
-    
-    sy = np.sum(np.abs(temp1), axis = 0)
-    
-    for i in range(nw):
-        temp2 = temp1[:,i]
-        for p in range(n):
-            psi_shift[:, p] = np.roll(psi[:, i], p, axis = 0)
-        temp = np.matmul(np.divide(np.real(temp2), abs(temp2) + epsilon), np.real(psi_shift)) + \
-               np.matmul(np.divide(np.imag(temp2), abs(temp2) + epsilon), np.imag(psi_shift))
-        temp3 = temp3 + 2 * (sy[i] - sx[i]) * temp
-    return temp3
 
 def sample_poisson(t, l):
     # get a sample of poisson process
