@@ -101,88 +101,10 @@ def wave_trans_in_freq_1d(x, psi_hat):
         f[:,i] = np.fft.ifft(np.multiply(x_hat, psi_hat[:,i]))
     return f
 
-def diff(y0, sx, psi_hat, psi, z):
-    # difference vector between first moment wavelet coefficients
-    sy = np.sum(np.abs(wave_trans_in_freq_1d(y0, psi_hat)), axis = 0)
-    sy = np.append(np.sum(y0), sy)
-    if z:
-        diff = np.sum((sy - sx)**2)
-    else:                                                               
-        diff = np.sum((sy[1:] - sx[1:])**2)
-    return diff
-
-
-def jac(y0, sx, psi_hat, psi, z):
-    # jacobian function for difference
-    epsilon = 1e-6
-    n = y0.shape[0]
-    nw = psi_hat.shape[1]
-    
-    temp1 = wave_trans_in_freq_1d(y0, psi_hat)
-    temp3 = np.zeros(n)
-    
-    psi_shift = np.zeros((n,n), dtype = complex)
-    psi_fftshift = np.fft.fftshift(psi, axes = 0)
-    
-    sy = np.sum(np.abs(temp1), axis = 0)
-    sy = np.append(np.sum(y0), sy)
-        
-    if z:
-        temp3 = temp3 + 2 * (sy[0] - sx[0]) * np.ones(n)
-    
-    for i in range(nw):
-        temp2 = temp1[:,i]
-        for p in range(n):
-            psi_shift[:, p] = np.roll(psi_fftshift[:,i], p, axis = 0)
-#             psi_shift[:, p] = np.roll(psi[:,i], p, axis = 0)
-        temp = np.matmul(np.divide(np.real(temp2), abs(temp2) + epsilon), np.real(psi_shift)) + \
-               np.matmul(np.divide(np.imag(temp2), abs(temp2) + epsilon), np.imag(psi_shift))
-        temp3 = temp3 + 2 * (sy[i+1] - sx[i+1]) * temp
-    return temp3
-
-
-def sample_poisson(t, l):
-    # get a sample of poisson process
-    
-    #initialization
-    x = np.zeros(1)
-    t_sum = np.zeros(1)
-    
-    #sample time of jumps
-    while t_sum[-1] < t[-1]:
-        u = - np.log(np.random.uniform(0,1,1)) / l
-        x = np.append(x, u)
-        t_sum = np.append(t_sum, t_sum[-1] + u) 
-    
-    y = np.zeros(len(t))
-    ind_left = 0
-    
-    #sample signal
-    for i in range(len(x) - 1):
-        ind_right = np.max(np.where(t < t_sum[i + 1])) + 1
-        if ind_right > ind_left:
-            y[ind_left:ind_right] = i 
-        ind_left = ind_right
-    
-    return y, x
-
-def prod_f(g_hat, t, nsample, l):
-    # compute f_{\xi}(s) in the notes
-    
-    n = g_hat.shape[0]
-    
-    #generate samples from poisson process
-    y = np.zeros((nsample, t.shape[0]))
-    for i in range(nsample):
-        y[i,:] = sample_poisson(t, l)[0]
-    dy = np.diff(y, axis = 1) # compute difference
-    
-    #compute expectation of modulus of window filter transforms
-    f = np.zeros((nsample, g_hat.shape[1]))
-    for i in range(nsample):
-        ind = np.random.choice(n,1)
-        f[i, :] = np.abs(wave_trans_in_freq_1d(dy[i,:], g_hat)[ind, :])
-    f = np.mean(f, axis = 0)
-    
+def scat_coeff(x, g_hat):
+    f = np.sum(np.abs(wave_trans_in_freq_1d(x, g_hat)), axis = 0)
+    f = np.append(np.sum(np.abs(x)), f)
+    f = np.append(np.sum(x), f)
     return f
+
 
