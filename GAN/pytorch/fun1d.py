@@ -1,11 +1,11 @@
 import numpy as np
 import math
 import cmath
-import matplotlib.pyplot as plt
-from scipy import signal
-from scipy.optimize import least_squares
-from scipy.optimize import minimize
-from scipy.io import loadmat
+#import matplotlib.pyplot as plt
+#from scipy import signal
+#from scipy.optimize import least_squares
+#from scipy.optimize import minimize
+#from scipy.io import loadmat
 import random
 from numpy import linalg as LA
 import time
@@ -22,7 +22,8 @@ def window_filter_1d(n, s, xi, sigma):
     chi = np.zeros(n)
     chi = gaussian(x/s, sigma)
     
-    o = np.exp(1j * xi * x)
+#     o = np.exp(1j * xi * x)
+    o = np.exp(1j * xi/s * x)
     
     psi = np.multiply(chi, o)
     
@@ -108,3 +109,28 @@ def scat_coeff(x, g_hat):
     return f
 
 
+def scat_infreq_1d(x, psi_hat, m):
+    # compute scattering coefficients to m order, currently for m = 1 or 2
+    # collect parameters
+    n = psi_hat.shape[0]
+    ns = psi_hat.shape[1]
+    nxi = psi_hat.shape[2]
+    nw = ns * nxi
+    
+    # zeros order
+    s0 = np.mean(x)
+    
+    #first order
+    if m > 0:
+        wx = np.abs(wave_trans_in_freq_1d(x, np.reshape(psi_hat,(n, -1))))
+        s1 = np.mean(wx, axis = 0)
+    if m == 1:
+        return [s0, s1]
+    elif m == 2:
+        # second order
+        s2 = np.zeros((nw, nw))
+        for i in range(ns - 1):
+            for j in range(nxi):
+                temp = np.abs(wave_trans_in_freq_1d(wx[:,i*nxi + j], np.reshape(psi_hat[:,(i + 1):, :], (n, -1))))
+                s2[i * nxi + j, (i+1)*nxi:] = np.mean(temp, axis = 0)
+        return [s0, s1, s2]

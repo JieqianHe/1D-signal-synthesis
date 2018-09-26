@@ -1,0 +1,28 @@
+#!/bin/bash -login
+
+### define resources needed:
+### walltime - how long you expect the job to run
+#PBS -l walltime=6:00:00
+
+### nodes:ppn - how many nodes & cores per node (ppn) that you require
+#PBS -l nodes=1:ppn=10:gpus=1:shared
+#PBS -l feature='gpgpu:intel16'
+
+### mem: amount of memory that the job will need
+#PBS -l mem=8gb
+
+### Specify my buy-in nodes
+#PBS -A hirn
+
+### you can give your job a name for easier identification
+#PBS -N 1d_GAN_MINST_13
+
+### Send an email when a job is aborted, begins or ends
+#PBS -m abe
+
+### change to the working directory where your code is located
+cd /mnt/home/hejieqia/research/synthesis/python/DCGAN/GAN-pt
+
+### call your executable
+python syn-GAN-pt.py
+
