@@ -6,7 +6,8 @@ Updated code for generating signals from poisson process using GAN in pytorch.
 - train 300 epochs, but result get stuck before 100 epoch.
 - runpytorch.qsub for submit job on hpcc
 
-- Need to include data x0_data.npy and x0_gaussian_data.npy saved on pc: /Users/kejiqing/Desktop/research/synthesis/python/data. 
+- Need to include data *x0_data.npy* and *x0_gaussian_data.npy* saved on pc:
+  /Users/kejiqing/Desktop/research/synthesis/python/data. 
   Newest result saved on pc: 
   /Users/kejiqing/Desktop/research/synthesis/python/GAN-pt/result13
 - Need to figure out how to save trained model and load model with sequence used in defining architecture.
@@ -14,4 +15,4 @@ Updated code for generating signals from poisson process using GAN in pytorch.
 *batch_disc_GAN.py*:
 - implement minibatch discrimination with smooth target(0.1 vs. 0.9)
 - solved problem with generating one single point(same fake signal, no randomness)
-- estimate \lambda   is higher than real \lambda  
+- estimated \lambda is higher than real \lambda
