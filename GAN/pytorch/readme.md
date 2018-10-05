@@ -15,4 +15,4 @@ Updated code for generating signals from poisson process using GAN in pytorch.
 *batch_disc_GAN.py*:
 - implement minibatch discrimination with smooth target(0.1 vs. 0.9)
 - solved problem with generating one single point(same fake signal, no randomness)
-- estimated \lambda is higher than real \lambda
+- estimated $\lambda$ is higher than real $\lambda$
