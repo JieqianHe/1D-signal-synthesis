@@ -1,5 +1,6 @@
 Updated code for generating signals from poisson process using GAN in pytorch. 
 
+*syn-gan-pt.py*:
 - pretrain discriminator with real data from poisson distribution with constant height and fake data from poisson with another &lambda with height from gaussian distribution.
 - train generator:discriminator = 2:1
 - train 300 epochs, but result get stuck before 100 epoch.
@@ -10,7 +11,7 @@ Updated code for generating signals from poisson process using GAN in pytorch.
   /Users/kejiqing/Desktop/research/synthesis/python/GAN-pt/result13
 - Need to figure out how to save trained model and load model with sequence used in defining architecture.
 
-batch_disc_GAN.py:
+*batch_disc_GAN.py*:
 - implement minibatch discrimination with smooth target(0.1 vs. 0.9)
 - solved problem with generating one single point(same fake signal, no randomness)
-- estimate \lambda is higher than real \lambda
+- estimate \lambda   is higher than real \lambda  
