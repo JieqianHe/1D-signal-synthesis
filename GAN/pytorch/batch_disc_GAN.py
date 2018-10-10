@@ -65,7 +65,7 @@ class Discriminator(torch.nn.Module):
 #        self.T = nn.Parameter(torch.Tensor(self.in_features, self.out_features, self.kernel_dims))
 #        init.normal_(self.T, 0, 1)
         self.batch_disc = batch_disc
-        if self.batch_disc = batch_disc:
+        if self.batch_disc:
             self.T = nn.Parameter(torch.randn(self.in_features, self.out_features, self.kernel_dims)*0.1, requires_grad = True)
             self.out = nn.Sequential(
                 nn.Linear(self.in_features + self.out_features, 1),
@@ -144,7 +144,7 @@ class Generator(torch.nn.Module):
         return self.out(x)
     
 
- 
+
 # Noise
 def noise(size):
     n = Variable(torch.randn(size, 100))
@@ -231,7 +231,7 @@ d_error_sum = []
 g_error_sum = []
 fake_score_sum = []
 real_score_sum = []
-ntest = 18
+ntest = 19
 
 # Create Network instances and init weights
 generator = Generator()
@@ -298,19 +298,21 @@ for epoch in range(num_epochs):
         fake_score_sum.append(float(torch.mean(d_pred_fake).data.cpu()))
         real_score_sum.append(float(torch.mean(d_pred_real).data.cpu()))
         
-        #if torch.mean(d_pred_fake) > torch.mean(d_pred_real):
+        if torch.mean(d_pred_fake) > torch.mean(d_pred_real) - 0.4:
+            torch.save(discriminator.state_dict(), './result/pois0_GAN_MINST_DISC_test%s_epoch%s'%(ntest, epoch))
+            torch.save(generator.state_dict(), './result/pois0_GAN_MINST_GEN_test%s_epoch%s'%(ntest, epoch))
          #   display.clear_output(True)
             # Display Images
           #  test_signals = generator(test_noise).squeeze(1).data.cpu().numpy()
            # np.save('./result/fake_signal_test%s_epoch%s_idx%s.npy'%(ntest, epoch, idx), test_signals)
            # plot_signals(ntest, epoch, idx, test_signals)
         # Display Progress
-       
-    display.clear_output(True)
-          # Display Images
-    test_signals = generator(test_noise).squeeze(1).data.cpu().numpy()
-    np.save('./result/fake_signal_test%s_epoch%s.npy'%(ntest, epoch), test_signals)
-    plot_signals(ntest, epoch, idx, test_signals)
+
+#     display.clear_output(True)
+#           # Display Images
+#     test_signals = generator(test_noise).squeeze(1).data.cpu().numpy()
+#     np.save('./result/fake_signal_test%s_epoch%s.npy'%(ntest, epoch), test_signals)
+#     plot_signals(ntest, epoch, idx, test_signals)
             
 #             plot_distributions(n_batch, test_images, d_error_sum, real_score_sum, 
 #                                fake_score_sum, g_error_sum)
@@ -318,5 +320,5 @@ for epoch in range(num_epochs):
     np.save('./result/pois0_score_fake_%s.npy'%ntest,  np.asarray(fake_score_sum))
     np.save('./result/pois0_loss_gen_%s.npy'%ntest, np.asarray(g_error_sum))
     np.save('./result/pois0_loss_dis_%s.npy'%ntest, np.asarray(d_error_sum))
-            #torch.save(discriminator.state_dict(), './result_tanh/pois0_GAN_MINST_DISC_test%s_epoch%s'%(ntest, epoch))
-            #torch.save(generator.state_dict(), './result_tanh/pois0_GAN_MINST_GEN_test%s_epoch%s'%(ntest,epoch))
+    torch.save(discriminator.state_dict(), './result/pois0_GAN_MINST_DISC_test%s'%ntest)
+    torch.save(generator.state_dict(), './result/pois0_GAN_MINST_GEN_test%s'%ntest)
