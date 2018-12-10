@@ -19,6 +19,9 @@ Updated code for generating signals from poisson process using GAN in pytorch.
 
 *scat_GAN.py*:
 - implement scattering GAN as $D(S(G(z)))$ with batch discrimination
+- can do: only l1, l1 + l2, l1 + 2nd layer l1, or l1 + l2 + 2nd layer l1 + 2nd layer l2
+- real signals are constant heights with $\lambda$ = 0.025
+- result: scattering almost match, need to train longer
 - need to fix 'NaN' problem
 
 *scat_GAN_isnan.py*:
