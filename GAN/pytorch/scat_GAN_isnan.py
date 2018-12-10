@@ -137,16 +137,16 @@ class Discriminator(torch.nn.Module):
             )
 
     def forward(self, x, pr = False):
-        x = self.l0(x)
+        x0 = self.l0(x)
         # Convolutional layers
-        x = self.conv1(x)
-        x = self.conv2(x)
+        x1 = self.conv1(x0)
+        x2 = self.conv2(x1)
         # Flatten and apply sigmoid
-        x = x.view(-1, 256*16*16)
-        x = self.l1(x)
+        x2 = x2.view(-1, 256*16*16)
+        x3 = self.l1(x2)
         if self.batch_disc:
             # minibatch discrimination after third layer(fully connected)
-            matrices = x.mm(self.T.view(self.in_features, -1))
+            matrices = x3.mm(self.T.view(self.in_features, -1))
             matrices = matrices.view(-1, self.out_features, self.kernel_dims)
 
             M = matrices.unsqueeze(0)  # 1xNxBxC
@@ -155,15 +155,18 @@ class Discriminator(torch.nn.Module):
             expnorm = torch.exp(-norm)
             o_b = (expnorm.sum(0) - 1)   # NxB, subtract self distance
             if self.mean:
-                o_b /= x.size(0) - 1
+                o_b /= x3.size(0) - 1
             
-            x = torch.cat([x, o_b], 1) # concatenate l1 feature and cross sample feature
+            x4 = torch.cat([x3, o_b], 1) # concatenate l1 feature and cross sample feature
+        x5 = self.out(x4)
         if pr:
-            print('value before sigmoid: ',torch.mean(x))
-        x = self.out(x)
-        if pr:
-            print('value after sigmoid: ', torch.mean(x))
-        return x
+            print('value after l0: ', torch.mean(x0))
+            print('value after conv1: ', torch.mean(x1))
+            print('value after conv2: ', torch.mean(x2))
+            print('value after l1: ', torch.mean(x3))
+            print('value after batch disc: ', torch.mean(x4))
+            print('value after sigmoid: ', torch.mean(x5))
+        return x5
 class Generator(torch.nn.Module):
     
     def __init__(self):
@@ -194,16 +197,22 @@ class Generator(torch.nn.Module):
         )
         self.out = torch.nn.Sigmoid()
 
-    def forward(self, x):
+    def forward(self, x, pr = False):
         # Project and reshape
-        x = self.l1(x)
-        x = self.l2(x)
-        x = x.view(x.shape[0], 256, 16*16)
+        x0 = self.l1(x)
+        x1 = self.l2(x0)
+        x1 = x1.view(x1.shape[0], 256, 16*16)
         # Convolutional layers
-        x = self.conv1(x)
-        x = self.conv2(x)
-        # Apply Tanh
-        return self.out(x)
+        x2 = self.conv1(x1)
+        x3 = self.conv2(x2)
+        x4 = self.out(x3)
+        if pr:
+            print('value after l1: ', torch.mean(x0))
+            print('value after l2: ', torch.mean(x1))
+            print('value after conv1: ', torch.mean(x2))
+            print('value after conv2: ', torch.mean(x3))
+            print('value after sigmoid: ', torch.mean(x4))
+        return x4
     
 
 
@@ -409,8 +418,8 @@ if torch.cuda.is_available():
     scatter.cuda()
     
 # Optimizers
-d_optimizer = Adam(discriminator.parameters(), lr=0.000005, betas=(0.5, 0.999))
-g_optimizer = Adam(generator.parameters(), lr=0.000005, betas=(0.5, 0.999))
+d_optimizer = Adam(discriminator.parameters(), lr=0.0001, betas=(0.5, 0.999))
+g_optimizer = Adam(generator.parameters(), lr=0.0001, betas=(0.5, 0.999))
 
 # Loss function
 loss = nn.BCELoss()
@@ -445,6 +454,8 @@ for epoch in range(num_epochs):
         if torch.cuda.is_available(): real_data = real_data.cuda()
         # Generate fake data
         fake_data = generator(noise(real_data.size(0))).detach()
+        if torch.isnan(torch.mean(fake_data)):
+            fake_data = generator(noise(real_data.size(0)), True)
         # Train D
 #         d_error, d_pred_real, d_pred_fake = train_discriminator(d_optimizer, 
 #                                                                 real_data, fake_data)
@@ -453,6 +464,8 @@ for epoch in range(num_epochs):
 
         # 1. Train on Real Data
         d_pred_real = discriminator(scatter(real_data), pr)
+        if torch.isnan(torch.mean(d_pred_real)):
+            d_pred_real = discriminator(scatter(real_data), True)
         #print('prediction real: ', d_pred_real[0])
         # Calculate error and backpropagate
         # assert (prediction_real >= 0. & prediction_real <= 1.).all()
@@ -461,6 +474,8 @@ for epoch in range(num_epochs):
 
         # 2. Train on Fake Data
         d_pred_fake = discriminator(scatter(fake_data), pr)
+        if torch.isnan(torch.mean(d_pred_fake)):
+            d_pred_real = discriminator(scatter(fake_data), True)
         # Calculate error and backpropagate
         #print('prediction fake: ', d_pred_fake[0])
         # assert (prediction_fake >= 0. & prediction_fake <= 1.).all()
@@ -473,12 +488,15 @@ for epoch in range(num_epochs):
 
         # 2. Train Generator
         # Generate fake data
-        fake_data = generator(noise(real_batch.size(0)))
+        fake_data = generator(noise(real_data.size(0)))
         # Train G
         # g_error = train_generator(g_optimizer, fake_data)
         g_optimizer.zero_grad()
         # Sample noise and generate fake data
         prediction = discriminator(scatter(fake_data), pr)
+        if torch.isnan(torch.mean(prediction)):
+            fake_data = generator(noise(real_data.size(0)), True)
+            prediction = discriminator(scatter(fake_data), True)
         # Calculate error and backpropagate
         #print('prediction fake: ', prediction[0])
         g_error = loss(prediction, real_data_target(prediction.size(0)))
@@ -487,11 +505,14 @@ for epoch in range(num_epochs):
         g_optimizer.step()
         # Return error
         
-        fake_data = generator(noise(real_batch.size(0)))
+        fake_data = generator(noise(real_data.size(0)))
         #g_error = train_generator(g_optimizer, fake_data)
         g_optimizer.zero_grad()
         # Sample noise and generate fake data
         prediction = discriminator(scatter(fake_data), pr)
+        if torch.isnan(torch.mean(prediction)):
+            fake_data = generator(noise(real_data.size(0)), True)
+            prediction = discriminator(scatter(fake_data), True)
         # Calculate error and backpropagate
         #print('prediction fake: ', prediction[0])
         g_error = loss(prediction, real_data_target(prediction.size(0)))
