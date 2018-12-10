@@ -16,3 +16,16 @@ Updated code for generating signals from poisson process using GAN in pytorch.
 - implement minibatch discrimination with smooth target(0.1 vs. 0.9)
 - solved problem with generating one single point(same fake signal, no randomness)
 - estimated $\lambda$ is higher than real $\lambda$
+
+*scat_GAN.py*:
+- implement scattering GAN as $D(S(G(z)))$ with batch discrimination
+- need to fix 'NaN' problem
+
+*scat_GAN_isnan.py*:
+- check 'nan' by using $torch.isnan$ and print out 'nan' values
+
+*scat_GAN.sb*:
+- sbatch file to run *scat_GAN.py* on hpcc
+
+*result_scat.ipynb*:
+- check result from scattering GAN, including load model and visualiza generated signals
