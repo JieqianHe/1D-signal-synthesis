@@ -6,6 +6,7 @@ from torch.optim import Adam
 from torch.autograd import Variable
 import torch.nn.init as init
 from torchvision import transforms, datasets
+import argparse
 
 import matplotlib
 matplotlib.use('Agg')
@@ -23,79 +24,181 @@ import numpy as np
 import time
 import math
 import pytorch_fft.fft.autograd as fft
+pi = math.pi
 
-x_data = np.load('./data/x4_4096_data.npy')
+parser = argparse.ArgumentParser()
+parser.add_argument('--test_id', type=int, required=True, help='id of current test')
+parser.add_argument('--datasize', type=int, default=2**12, help='size of 1D signal')
+parser.add_argument('--lambda_true', type=float, default=0.025, help='intensity of poisson from true data')
+parser.add_argument('--nepochs', type=int, default=300, help='number of total epochs')
+parser.add_argument('--npreepochs', type=int, default=10, help='number of pretraining epochs')
+parser.add_argument('--batchsize', type=int, default=64, help='batchsize for each training step')
+parser.add_argument('--batch_disc', type=bool, default=True, help='whether to do batch discrimination')
+parser.add_argument('--layer2', type=bool, default=True, help='whether to do second layer scattering')
+parser.add_argument('--l2', type=bool, default=False, help='whether to do l2 norm in scattering')
+parser.add_argument('--norm', type=bool, default=False, help='whether to add scattering of normalized signal')
+parser.add_argument('--ntestsample', type=int, default=16, help='number of samples for testing, >= 16')
+parser.add_argument('--p1', type=int, default=1, help='scattering moments for the first layer')
+parser.add_argument('--p2', type=int, default=1, help='scattering moments for the second layer')
+parser.add_argument('--output_scale', type=float, default=5, help='maximal height of output signal from generator')
+parser.add_argument('--Q', type=int, default=2, help='scale intervals for defining wavelets')
+parser.add_argument('--J', type=int, default=4, help='largest scale for defining wavelets')
+parser.add_argument('--xi', type=float, default=np.asarray([pi/6]), help='central frequency of 1st layer wavelets')
+parser.add_argument('--xi2', type=float, default=np.asarray([pi/4]), help='central frequency of 2nd layer wavelets')
+parser.add_argument('--c', type=int, default=2, help='s2/s1, proportion of wavelet scales between 2nd and 1st layer')
+opt = parser.parse_args()
+
+ntest=opt.test_id
+n = opt.datasize
+lambda_true = opt.lambda_true
+num_epochs = opt.nepochs
+pretrain_epochs = opt.npreepochs
+batch_size = opt.batchsize
+batch_disc = opt.batch_disc
+layer2 = opt.layer2
+l2 = opt.l2
+norm = opt.norm
+num_test_samples = opt.ntestsample
+p1 = opt.p1
+p2 = opt.p2
+output_scale = opt.output_scale
+Q = opt.Q
+J = opt.J
+xi = opt.xi
+xi2 = opt.xi2
+c = opt.c
+print('parameter defined!')
+
+x_data = np.load('./data/x_homo_regular.npy')
 ndata = x_data.shape[0]
-x_data = torch.from_numpy(np.reshape(x_data,[-1,1,2**12])).float()
-x_fake_data = np.load('./data/x4_4096_fake_data.npy')
-x_fake_data = torch.from_numpy(np.reshape(x_fake_data,[-1,1,2**12])).float()
+x_data = torch.from_numpy(np.reshape(x_data,[-1,1,n])).float()
+x_fake_data = np.load('./data/x_homo_fake.npy')
+x_fake_data = torch.from_numpy(np.reshape(x_fake_data,[-1,1,n])).float()
+nbatch = ndata // batch_size # number of batches in one epoch
 print('Data loaded!')
 
 class scattering(torch.nn.Module):
-    def __init__(self, g_real_hat, g_imag_hat, g2_real_hat, g2_imag_hat, l2, layer2, nbatch, n):
-        # g_real_hat: real part of wavelets in frequency
-        # g_imag_hat: imagery part of wavelets in frequency
-        # nbatch: length of batch
+    def __init__(self, g_real_hat, g_imag_hat, g2_real_hat, g2_imag_hat, l2, layer2, norm, batch_size, n, p1, p2, eps = 1e-7):
+        # Two-layer scattering module.
+        
+        # g_real_hat: real part of wavelets in frequency in the first scattering layer
+        # g_imag_hat: imagery part of wavelets in frequency in the first scattering layer
+        # g2_real_hat: real part of wavelets in frequency in the second scattering layer
+        # g2_imag_hat: imagery part of wavelets in frequency in the second scattering layer
+        # l2, layer2, norm: whether to do l2 norm, second layer scattering and signal normalization with heights {1,-1}
+        # batch_size: length of batch
         # n: signal length
+        # p1, p2: moments of first and second layer
+        
         super(scattering, self).__init__()
         self.g_real_hat = g_real_hat.unsqueeze(0) # shape 1 * nwave * n
         self.g_imag_hat = g_imag_hat.unsqueeze(0)
         self.g2_real_hat = g2_real_hat.unsqueeze(0) # shape 1 * nwave * n
         self.g2_imag_hat = g2_imag_hat.unsqueeze(0)
-        self.nbatch = nbatch
+        self.batch_size = batch_size
         self.nwave = g_real_hat.shape[0]
-        self.x_imag = torch.zeros(self.nbatch, 1, n, 1) # imagery part of x is zero
-        self.x2_imag = torch.zeros(self.nbatch, self.nwave, n, 1) 
+        self.x_imag = torch.zeros(self.batch_size, 1, n, 1) # imagery part of x is zero
+        self.x2_imag = torch.zeros(self.batch_size, self.nwave, n, 1) 
         if torch.cuda.is_available():
             self.x_imag = self.x_imag.cuda()
             self.x2_imag = self.x2_imag.cuda()
+        
+        self.layer2 = layer2
+        self.norm = norm
+        self.p1 = p1
+        self.p2 = p2
+        self.eps = eps     
+        
     def forward(self, x_real): 
-        # x_real: n_batch * 1 * n
+        # x_real: batch_size * 1 * n
         self.x_real = x_real.unsqueeze(3)
-        self.x = torch.cat((self.x_real, self.x_imag), 3) # n_batch * 1 * n * 2
+        self.x = torch.cat((self.x_real, self.x_imag), 3) # batch_size * 1 * n * 2
         
         # convolution in frequency
         x_hat = torch.fft(self.x, 1) # fft
-        y_real_hat = x_hat[:,:,:,0] * self.g_real_hat - x_hat[:,:,:,1] * self.g_imag_hat # multiply in freq n_batch * nwave * n
-        y_imag_hat = x_hat[:,:,:,0] * self.g_imag_hat + x_hat[:,:,:,1] * self.g_real_hat # multiply in freq
-        y = torch.ifft(torch.cat((y_real_hat.unsqueeze(3), y_imag_hat.unsqueeze(3)), 3), 1) # ifft, n_batch * nwave * n * 2
-        temp = torch.sqrt(y[:,:,:,0]**2 + y[:,:,:,1]**2) # nonlinear operator: modulus, n_batch * nwave * n
+        # multiply in freq batch_size * nwave * n
+        y_real_hat = x_hat[:,:,:,0] * self.g_real_hat - x_hat[:,:,:,1] * self.g_imag_hat 
+        y_imag_hat = x_hat[:,:,:,0] * self.g_imag_hat + x_hat[:,:,:,1] * self.g_real_hat
+        # ifft, batch_size * nwave * n * 2
+        y = torch.ifft(torch.cat((y_real_hat.unsqueeze(3), y_imag_hat.unsqueeze(3)), 3), 1) 
         
-        # scattering
-        s = torch.sum(temp, 2)
+        # nonlinear operator: modulus, batch_size * nwave * n
+        temp = torch.sqrt(y[:,:,:,0]**2 + y[:,:,:,1]**2) 
         
-        # add l2 norm
-        if l2:
-            s = torch.cat((s, torch.sum(temp**2, 2)), 1)
-        # add second layer
-        if layer2:
+        # 1st order scattering
+        s = torch.mean(temp**self.p1, 2)
+        
+        # 2nd order scattering
+        if self.layer2:
             temp = temp.unsqueeze(3)
-            temp2 = torch.zeros(self.nbatch, nwave, n)
+            temp2 = torch.zeros(self.batch_size, nwave, n)
             if torch.cuda.is_available():
                 temp2 = temp2.cuda()
-            x2 = torch.cat((temp, self.x2_imag), 3) # n_batch * nwave * n * 2
+            x2 = torch.cat((temp**self.p1, self.x2_imag), 3) # batch_size * nwave * n * 2
             x2_hat = torch.fft(x2, 1)
             for i in range(self.nwave):
-                y2_real_hat = x2_hat[:,i,:,0] * self.g2_real_hat[:,i,:] - x2_hat[:,i,:,1] * self.g2_imag_hat[:,i,:] # nbatch * n
+                # batch_size * n
+                y2_real_hat = x2_hat[:,i,:,0] * self.g2_real_hat[:,i,:] - x2_hat[:,i,:,1] * self.g2_imag_hat[:,i,:] 
                 y2_imag_hat = x2_hat[:,i,:,0] * self.g2_imag_hat[:,i,:] + x2_hat[:,i,:,1] * self.g2_real_hat[:,i,:]
-                y2 = torch.ifft(torch.cat((y2_real_hat.unsqueeze(2), y2_imag_hat.unsqueeze(2)), 2), 1) # nbatch * n * 2
-            #    print(temp2.shape)
-            #    print(y2.shape)
-                temp2[:, i, :] = torch.sqrt(y2[:,:,0]**2 + y2[:,:,1]**2) # nonlinear operator: modulus, n_batch * nwave * n
-            s = torch.cat((s, torch.sum(temp2, 2)), 1)
-            if l2:
-                s = torch.cat((s, torch.sum(temp2**2, 2)), 1)
-        return s.unsqueeze(1) # nbatch * 1 *  nf
+                # batch_size * n * 2
+                y2 = torch.ifft(torch.cat((y2_real_hat.unsqueeze(2), y2_imag_hat.unsqueeze(2)), 2), 1) 
+                
+                # nonlinear operator: modulus, batch_size * nwave * n
+                temp2[:, i, :] = torch.sqrt(y2[:,:,0]**2 + y2[:,:,1]**2) 
+            s = torch.cat((s, torch.mean(temp2**self.p2, 2)), 1)
+        
+        # normalize signal to height {1, -1}
+        if self.norm:
+            self.z_imag = torch.zeros(self.batch_size, 1, n, 1) # imagery part of x is zero
+            self.z2_imag = torch.zeros(self.batch_size, self.nwave, n, 1) 
+            if torch.cuda.is_available():
+                self.z_imag = self.z_imag.cuda()
+                self.z2_imag = self.z2_imag.cuda()
+                
+            self.z_real = (torch.abs(self.x_real) > self.eps).float() * torch.sign(self.x_real)
+            self.z = torch.cat((self.z_real, self.z_imag), 3) # batch_size * 1 * n * 2
+        
+            # convolution in frequency
+            z_hat = torch.fft(self.z, 1) # fft
+            # multiply in freq batch_size * nwave * n
+            w_real_hat = z_hat[:,:,:,0] * self.g_real_hat - z_hat[:,:,:,1] * self.g_imag_hat 
+            w_imag_hat = z_hat[:,:,:,0] * self.g_imag_hat + z_hat[:,:,:,1] * self.g_real_hat
+            # ifft, n_batch * nwave * n * 2
+            w = torch.ifft(torch.cat((w_real_hat.unsqueeze(3), w_imag_hat.unsqueeze(3)), 3), 1) 
+            
+            # nonlinear operator: modulus, batch_size * nwave * n
+            temp = torch.sqrt(w[:,:,:,0]**2 + w[:,:,:,1]**2) 
+
+            # 1st order scattering
+            s = torch.cat((s, torch.mean(temp**self.p, 2)), 1)
+
+            # 2nd order scattering
+            if self.layer2:
+                temp = temp.unsqueeze(3)
+                temp2 = torch.zeros(self.batch_size, nwave, n)
+                z2 = torch.cat((temp**self.p1, self.z2_imag), 3) # batch_size * nwave * n * 2
+                z2_hat = torch.fft(z2, 1)
+                for i in range(self.nwave):
+                    # batch_size * n
+                    w2_real_hat = z2_hat[:,i,:,0] * self.g2_real_hat[:,i,:] - z2_hat[:,i,:,1] * self.g2_imag_hat[:,i,:] 
+                    w2_imag_hat = z2_hat[:,i,:,0] * self.g2_imag_hat[:,i,:] + z2_hat[:,i,:,1] * self.g2_real_hat[:,i,:]
+                    
+                    # batch_size * n * 2
+                    w2 = torch.ifft(torch.cat((w2_real_hat.unsqueeze(2), w2_imag_hat.unsqueeze(2)), 2), 1) 
+                    # nonlinear operator: modulus, batch_size * nwave * n
+                    temp2[:, i, :] = torch.sqrt(w2[:,:,0]**2 + w2[:,:,1]**2) 
+                s = torch.cat((s, torch.mean(temp2**self.p2, 2)), 1)
+        return s.unsqueeze(1) # batch_size * 1 *  nf
         
               
 class Discriminator(torch.nn.Module):
     
     def __init__(self, batch_disc, ns, n):
         super(Discriminator, self).__init__()
-        self.ns = ns # number of scattering coefficients
+        self.ns = ns # length of input features
         self.n = n # signal length
-        self.in_features = 1024
-        self.out_features = 128
+        self.in_features = 1024 # input length for batch discrimination
+        self.out_features = 128 # output length for batch discrimination
         self.kernel_dims = 16
         self.mean = False
         
@@ -166,9 +269,10 @@ class Discriminator(torch.nn.Module):
         return x
 class Generator(torch.nn.Module):
     
-    def __init__(self):
+    def __init__(self, output_scale, out_active = 'tanh'):
         super(Generator, self).__init__()
-        
+        self.output_scale = output_scale
+
         self.l1 = nn.Sequential(
             nn.Linear(100, 1024),
             nn.Tanh()
@@ -192,7 +296,10 @@ class Generator(torch.nn.Module):
                 stride=4, padding=2, bias=False
             )
         )
-        self.out = torch.nn.Sigmoid()
+        if out_active == 'tanh':
+            self.out = torch.nn.Tanh()
+        elif out_active == 'sigmoid':
+            self.out = torch.nn.Sigmoid()
 
     def forward(self, x):
         # Project and reshape
@@ -203,7 +310,7 @@ class Generator(torch.nn.Module):
         x = self.conv1(x)
         x = self.conv2(x)
         # Apply Tanh
-        return self.out(x)
+        return self.output_scale * self.out(x)
     
 
 
@@ -279,6 +386,7 @@ def plot_signals(ntest, epoch, signals):
         frame1 = plt.gca()
         frame1.axes.get_xaxis().set_visible(False)
         frame1.axes.get_yaxis().set_visible(False)
+    np.save('./result/syn_pois_test%s_epoch%s.npy'%(ntest, epoch), signals)
     plt.savefig('./result/syn_pois_test%s_epoch%s'%(ntest, epoch))
 
 def determine_sigma(epsilon):
@@ -296,7 +404,7 @@ def determine_J(N, Q, sigma, *alpha):
 
 def gabor_wave_1d(n, s, xi):
     # generate one 1D gabor wavelet 
-    x = np.arange(n) - np.floor(n/2)
+    x = np.arange(n)
     chi = np.zeros(n)
     chi[0:s] = 1/s
 #     chi[0:s] = 1
@@ -321,6 +429,33 @@ def gabor_wave_family_1d(n, s, xi):
                 psi[:, i, k], psi_hat[:, i, k] = gabor_wave_1d(n, int(s[i]), xi[k])
     return psi, psi_hat
 
+def bump_wave_1d(n, s, xi):
+    # generate one 1D gabor wavelet 
+    x = np.arange(n)
+    chi = np.zeros(n)
+    t = np.arange(s - 1) + 1
+    chi[1:s] = np.exp( - s**2 / (4 * t * s - 4 * t**2))
+#     chi[0:s] = 1
+    
+    o = np.exp(1j * xi * x)
+    
+    psi = np.multiply(chi, o)
+    
+    psi_hat = np.fft.fft(psi)
+    return psi, psi_hat
+
+def bump_wave_family_1d(n, s, xi):
+    # generate a family of 1D gabor wavelets with specified scales and rotations in space
+    ns = s.shape[0]
+    nxi = xi.shape[0]
+    
+    psi = np.zeros((n, ns, nxi),dtype=complex)
+    psi_hat = np.zeros((n, ns, nxi),dtype=complex)
+    for i in range(ns):
+        for k in range(nxi):
+                psi[:, i, k], psi_hat[:, i, k] = bump_wave_1d(n, int(s[i]), xi[k])
+    return psi, psi_hat
+
 def estimate_lambda(x, epsilon = 0.8):
     lambda_hat = np.zeros(x.shape[0])   
     for i in range(x.shape[0]):
@@ -331,19 +466,19 @@ def estimate_lambda(x, epsilon = 0.8):
     return np.mean(lambda_hat)
 
 # define wavelets
-n = 2**12
-pi = math.pi
-epsilon = 1e-4
-sigma = determine_sigma(epsilon)
-Q = 2
-alpha = 2
-J = determine_J(n, Q, sigma, alpha)
-s = np.unique(np.floor(2 ** np.linspace(0, J, int(J*Q)+1)))
+
+# epsilon = 1e-4
+# sigma = determine_sigma(epsilon)
+# Q = 2
+# alpha = 2
+# J = determine_J(n, Q, sigma, alpha)
+# J = 4
+s = np.unique(np.floor(2 ** np.linspace(1, J, int(J*Q)+1-Q)))
 #s = np.array([1,2,4,8,10,16,31,63,129,257,513])
-xi = 2 * pi * np.random.choice(n,1) / n
-xi2 = 2 * pi * np.random.choice(n,1) / n
-np.save('xi', xi)
-np.save('xi2', xi2)
+# xi = 2 * pi * np.random.choice(n,1) / n
+# xi2 = 2 * pi * np.random.choice(n,1) / n
+# np.save('./result/xi_%s.npy'%ntest, xi)
+# np.save('./result/xi2_%s.npy'%ntest, xi2)
 
 g, g_hat = gabor_wave_family_1d(n,s,xi)
 g = np.reshape(g, (g.shape[0], -1)) # n * nwave
@@ -352,7 +487,6 @@ g_hat = np.swapaxes(np.reshape(g_hat, (g_hat.shape[0], -1)), 0, 1) # nwave * n
 g_real_hat = torch.from_numpy(np.real(g_hat)).float()
 g_imag_hat = torch.from_numpy(np.imag(g_hat)).float()
 
-c = 4
 s2 = s * c
 g2, g2_hat = gabor_wave_family_1d(n,s2,xi2)
 g2 = np.reshape(g2, (g2.shape[0], -1)) # n * nwave
@@ -367,39 +501,35 @@ if torch.cuda.is_available():
     g2_imag_hat = g2_imag_hat.cuda()
 print('wavelets defined')
 
-# Number of epochs
-n = 2**12
-lambda_true = 0.025
-num_epochs = 200
-pretrain_epochs = 10
-batch_size = 64
-nbatch = ndata // batch_size
-num_test_samples = 16
-batch_disc = True # do minibatch discrimination
-test_noise = noise(num_test_samples)
-l2 = False
-layer2 = True
 
+
+test_noise = noise(num_test_samples)
 # logger = Logger(model_name='DCGAN', data_name='MNIST')
 d_error_sum = []
 g_error_sum = []
 fake_score_sum = []
 real_score_sum = []
-ntest = 7
+
 
 # Create Network instances and init weights
-generator = Generator()
+generator = Generator(output_scale)
 generator.apply(init_weights)
+# generator.load_state_dict(torch.load('./result/scat_GAN_GEN_test%s'%(ntest - 1), map_location=lambda storage, loc: storage))
+
 nf = nwave
 if l2:
     nf = 2 * nf
 if layer2:
     nf = 2 * nf
-print('nf: ',nf)    
+if norm:
+    nf = 2 * nf
+print('nf: ',nf)   
+
 discriminator = Discriminator(batch_disc, nf, n)
 discriminator.apply(init_weights)
+# discriminator.load_state_dict(torch.load('./result/scat_GAN_DISC_test%s'%(ntest - 1), map_location=lambda storage, loc: storage))
 
-scatter = scattering(g_real_hat, g_imag_hat, g2_real_hat, g2_imag_hat, l2, layer2, batch_size, n)
+scatter = scattering(g_real_hat, g_imag_hat, g2_real_hat, g2_imag_hat, l2, layer2, norm, batch_size, n, p1, p2)
 scatter.apply(init_weights)
 
 # Enable cuda if available
@@ -432,12 +562,18 @@ for epoch in range(pretrain_epochs):
         # Train D
         d_error, d_pred_real, d_pred_fake = train_discriminator(d_optimizer, 
                                                                 real_data, fake_data)
+def error(x, y, eps = 1e-12):
+    if torch.mean(x) > 0.9:
+        return loss(x - eps, y)
+    elif torch.mean(x) < 0.1:
+        return loss(x + eps, y)
+    else:
+        return loss(x,y)
 
+    
 pr = False
 for epoch in range(num_epochs):
     print('epoch:',epoch)
-    #if epoch == 9:
-    #    pr = True
     for idx in range(nbatch):
         real_batch = x_data[idx * batch_size:(idx + 1)*batch_size, :]
         # 1. Train Discriminator
@@ -453,18 +589,12 @@ for epoch in range(num_epochs):
 
         # 1. Train on Real Data
         d_pred_real = discriminator(scatter(real_data), pr)
-        #print('prediction real: ', d_pred_real[0])
-        # Calculate error and backpropagate
-        # assert (prediction_real >= 0. & prediction_real <= 1.).all()
-        error_real = loss(d_pred_real, real_data_target(real_data.size(0)))
+        error_real = error(d_pred_real, real_data_target(real_data.size(0)))
         error_real.backward()
 
         # 2. Train on Fake Data
         d_pred_fake = discriminator(scatter(fake_data), pr)
-        # Calculate error and backpropagate
-        #print('prediction fake: ', d_pred_fake[0])
-        # assert (prediction_fake >= 0. & prediction_fake <= 1.).all()
-        error_fake = loss(d_pred_fake, fake_data_target(real_data.size(0)))
+        error_fake = error(d_pred_fake, fake_data_target(real_data.size(0)))
         error_fake.backward()
         
         # Update weights with gradients
@@ -481,7 +611,7 @@ for epoch in range(num_epochs):
         prediction = discriminator(scatter(fake_data), pr)
         # Calculate error and backpropagate
         #print('prediction fake: ', prediction[0])
-        g_error = loss(prediction, real_data_target(prediction.size(0)))
+        g_error = error(prediction, real_data_target(prediction.size(0)))
         g_error.backward()
         # Update weights with gradients
         g_optimizer.step()
@@ -494,7 +624,7 @@ for epoch in range(num_epochs):
         prediction = discriminator(scatter(fake_data), pr)
         # Calculate error and backpropagate
         #print('prediction fake: ', prediction[0])
-        g_error = loss(prediction, real_data_target(prediction.size(0)))
+        g_error = error(prediction, real_data_target(prediction.size(0)))
         g_error.backward()
         # Update weights with gradients
         g_optimizer.step()
@@ -508,9 +638,6 @@ for epoch in range(num_epochs):
     plot_signals(ntest, epoch, test_signals)
     lamb_est = estimate_lambda(test_signals)
     print('estimated lambda: ', lamb_est)
-#    if np.abs(lamb_est - lambda_true) < 0.005:
-#            torch.save(discriminator.state_dict(), './result/scat_GAN_DISC_test%s_epoch%s'%(ntest, epoch))
-#            torch.save(generator.state_dict(), './result/scat_GAN_GEN_test%s_epoch%s'%(ntest, epoch))
     np.save('./result/scat_score_real_%s.npy'%ntest, np.asarray(real_score_sum))
     np.save('./result/scat_score_fake_%s.npy'%ntest,  np.asarray(fake_score_sum))
     np.save('./result/scat_loss_gen_%s.npy'%ntest, np.asarray(g_error_sum))
